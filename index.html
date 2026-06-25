@@ -103,7 +103,7 @@
    you the endpoint is not set yet (handy while you are setting things up).
    ======================================================================= */
 // >>> EDIT HERE >>>
-const ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbyT_5pTe4LtDrgtMBhwZiEvHvSK8uSIQCdEK92uii8itO4dDE6bwzj-RwNQ1rAXS6gx1g/exec";
+const ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbxuqk858tLxdquZ8bhpLEQUcE-JtuOEITg6SdaiNEr6e6GrsdWSD5cpM_zLxHfUmnA7hA/exec";
 
 
 /* =======================================================================
@@ -491,30 +491,26 @@ function runExperiment() {
 
 
 /* =======================================================================
-   9) SAVING THE DATA  —  ONE POST, sent as a "simple" no-cors request
+   9) SAVING THE DATA  —  send, then VERIFY it really landed
    -----------------------------------------------------------------------
-   IMPORTANT (do not "fix" this back):
+   This happens in two steps so we never show a fake "saved" message:
 
-   1) We send Content-Type "text/plain;charset=utf-8" with a JSON STRING as
-      the body. This makes the request a CORS "simple request", so the browser
-      does NOT send a preflight (OPTIONS) request. Apps Script web apps cannot
-      answer preflights. The Apps Script reads e.postData.contents and
-      JSON.parse()s it.
+   STEP 1 — SEND (a POST we cannot read back).
+     We POST with Content-Type "text/plain;charset=utf-8" (a CORS "simple
+     request", so no preflight — Apps Script cannot answer preflights) and
+     mode: "no-cors". Apps Script answers a POST by redirecting to
+     script.googleusercontent.com, and the browser will NOT let page
+     JavaScript read that cross-origin reply (trying throws "Failed to fetch").
+     So we do not try to read it; we just deliver the data.
 
-   2) We use mode: "no-cors". Apps Script answers a POST by REDIRECTING to
-      script.googleusercontent.com, and the browser will not let page
-      JavaScript READ that cross-origin reply — trying to read it throws
-      "TypeError: Failed to fetch" EVEN THOUGH the row was already written to
-      your Sheet. So we deliberately do not read the reply. With no-cors the
-      fetch promise resolves once the request has been delivered (the data is
-      saved at that point), and it only rejects on a genuine network failure
-      (e.g. the student is offline). We therefore treat "promise resolved" as
-      success and offer a retry only on a real network error.
+   STEP 2 — VERIFY (a read we CAN do, via JSONP).
+     A <script> tag is allowed to load cross-origin, so we ask the Apps Script
+     (?action=verify) how many rows this student now has in the Sheet, and it
+     answers by calling a function we defined (this is "JSONP"). Only when the
+     Sheet actually contains our rows do we show success. If the rows are not
+     there, the student sees a clear error and a Try-again button — no lying.
 
-      Trade-off: because the reply is unreadable, "saved" here means "delivered
-      to Google", not "the server confirmed it". The doPost in Code.gs is
-      written so that a delivered request reliably appends the rows; to be 100%
-      sure, glance at the "raw" tab of your Sheet after a test run.
+   The result: "saved" on screen means the data are really in your Sheet.
    ======================================================================= */
 function attemptSave() {
   const display = jsPsych.getDisplayElement();
@@ -553,6 +549,7 @@ function attemptSave() {
     trials: trials
   };
 
+  // STEP 1 — send the data (we cannot read this reply; see the note above).
   fetch(ENDPOINT_URL, {
     method: "POST",
     mode: "no-cors",                                         // <-- do not try to read the reply
@@ -560,13 +557,60 @@ function attemptSave() {
     body: JSON.stringify(payload)
   })
     .then(function () {
-      // The request was delivered (and the row written). We cannot read the
-      // reply in no-cors mode, so a resolved promise IS our success signal.
-      jsPsych.finishTrial();     // advance to the debrief screen
+      // Give the server a moment to finish writing, then VERIFY (step 2).
+      setTimeout(function () {
+        verifySave(STUDENT_NUMBER, GROUP, trials.length);
+      }, 800);
     })
     .catch(function (err) {
-      showSaveError(err);        // genuine network failure (e.g. offline) -> retry
+      showSaveError(err);        // could not even send (e.g. offline) -> retry
     });
+}
+
+// STEP 2 — ask the server (via JSONP) whether our rows are really in the Sheet.
+// We succeed only if the Sheet reports at least as many rows for this student
+// as we just sent. Anything else shows an honest error with a retry button.
+function verifySave(studentNumber, group, expectedRows) {
+  const callbackName = "stroopVerify_" + Date.now();
+  const script = document.createElement("script");
+
+  // If the server does not answer within 15 s, treat it as a failure.
+  const timer = setTimeout(function () {
+    cleanup();
+    showSaveError("The server did not confirm your data in time.");
+  }, 15000);
+
+  function cleanup() {
+    clearTimeout(timer);
+    try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+    if (script.parentNode) { script.parentNode.removeChild(script); }
+  }
+
+  // The Apps Script calls this function with its answer.
+  window[callbackName] = function (response) {
+    cleanup();
+    if (response && response.status === "ok" && response.rows >= expectedRows) {
+      jsPsych.finishTrial();     // confirmed in the Sheet -> show the debrief
+    } else {
+      const reported = (response && typeof response.rows !== "undefined") ? response.rows : "no";
+      showSaveError("The server could not confirm your data were stored (it found " +
+                    reported + " saved rows). Please try again.");
+    }
+  };
+
+  // Build the JSONP request URL and load it as a <script>.
+  script.src =
+    ENDPOINT_URL +
+    "?action=verify" +
+    "&callback=" + encodeURIComponent(callbackName) +
+    "&student_number=" + encodeURIComponent(studentNumber) +
+    "&group=" + encodeURIComponent(group) +
+    "&_=" + Date.now();          // cache-buster so we never read a stale answer
+  script.onerror = function () {
+    cleanup();
+    showSaveError("Could not reach the server to confirm your data.");
+  };
+  document.body.appendChild(script);
 }
 
 // Shows a clear failure message with a "Try again" button.
