@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Colour–Word (Stroop) Task</title>
+
+  <!-- ===================================================================== -->
+  <!-- jsPsych v7.3.4 loaded from a CDN (unpkg). These exact URLs are pinned  -->
+  <!-- to a stable version so the page keeps working unchanged for years.    -->
+  <!-- If unpkg is ever slow in your country, you may swap "unpkg.com" for    -->
+  <!-- "cdn.jsdelivr.net/npm" in every URL below — the paths are identical.   -->
+  <!-- ===================================================================== -->
+  <link rel="stylesheet" href="https://unpkg.com/jspsych@7.3.4/css/jspsych.css" />
+  <script src="https://unpkg.com/jspsych@7.3.4"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@1.1.3"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-button-response@1.1.3"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-survey-text@1.1.3"></script>
+
+  <style>
+    /* General look. jsPsych supplies most styling; this just tidies things up. */
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+      background: #fafafa;
+      color: #1a1a1a;
+      margin: 0;
+    }
+    /* The box used for full-screen messages (wrong group, mobile, etc.). */
+    #blocker { display: none; }
+    .msg {
+      max-width: 720px;
+      margin: 8vh auto;
+      padding: 28px 32px;
+      background: #ffffff;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+      line-height: 1.55;
+      font-size: 18px;
+    }
+    .msg h1 { font-size: 24px; margin-top: 0; }
+    .consent-box {
+      text-align: left;
+      max-width: 720px;
+      margin: 0 auto 18px;
+      padding: 18px 22px;
+      background: #f4f7fb;
+      border: 1px solid #cdd9e6;
+      border-radius: 10px;
+      line-height: 1.55;
+    }
+    .kbd {
+      display: inline-block;
+      min-width: 22px;
+      padding: 2px 8px;
+      border: 1px solid #888;
+      border-bottom-width: 3px;
+      border-radius: 6px;
+      background: #fff;
+      font-weight: bold;
+      font-family: monospace;
+    }
+    .jspsych-content { max-width: 860px; }
+  </style>
+</head>
+
+<body>
+  <!-- Messages (wrong group / mobile / setup error) are written here. -->
+  <div id="blocker"></div>
+  <!-- jsPsych draws the experiment here. -->
+  <div id="jspsych-target"></div>
+
+<script>
+/* =======================================================================
+   COLOUR–WORD (STROOP) TASK   —   single self-contained page
+   -----------------------------------------------------------------------
+   Built for a first-year "Introduction to Academic Research" workshop.
+   Students run this in the browser at home, then analyse the pooled data
+   in class. The page is STATIC (it works on GitHub Pages). It sends all of
+   its data in ONE request at the end to a Google Apps Script web app, which
+   stores it in a Google Sheet.
+
+   WHAT YOU (the instructor) NEED TO EDIT is marked with banners like:
+        // >>> EDIT HERE >>>
+   The two things you MUST set are:
+        1) ENDPOINT_URL   (just below)
+        2) the consent + debrief text (further down)
+   Everything else already works and is documented so you can tweak it.
+   ======================================================================= */
+
+
+/* =======================================================================
+   1) ENDPOINT — THE ONE LINE YOU MUST CHANGE
+   -----------------------------------------------------------------------
+   Paste the Google Apps Script web-app URL between the quotes below.
+   It is the address that ends in ".../exec" (see Code.gs setup steps).
+   Leave the "PASTE_..." text and the page will refuse to save and tell
+   you the endpoint is not set yet (handy while you are setting things up).
+   ======================================================================= */
+// >>> EDIT HERE >>>
+const ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbyT_5pTe4LtDrgtMBhwZiEvHvSK8uSIQCdEK92uii8itO4dDE6bwzj-RwNQ1rAXS6gx1g/exec";
+
+
+/* =======================================================================
+   2) EXPERIMENT SETTINGS — safe, sensible defaults. Change numbers freely.
+   ======================================================================= */
+
+// Valid group codes. Each group opens the task with a different link, e.g.
+//   https://YOURNAME.github.io/stroop/?group=A
+// The code reads ?group=… from the URL. Nothing is guessed: a missing or
+// wrong code shows an error instead of silently picking a real group.
+const VALID_GROUPS = ["A", "B", "C", "D", "E", "F"];
+
+// Number of trials.  Keep these EVEN and ideally divisible by 4 so the
+// congruent/incongruent and colour balancing comes out exactly even.
+const PRACTICE_TRIALS = 12;   // ~12 practice trials (with feedback)
+const TEST_TRIALS     = 48;   // ~48 test trials (no feedback) -> 24 congruent / 24 incongruent
+
+// Timing, in milliseconds.
+const FIXATION_MS = 500;      // how long the "+" fixation cross is shown
+const ITI_MS      = 500;      // blank gap between trials (inter-trial interval)
+const FEEDBACK_MS = 800;      // how long "Correct!/Incorrect" shows in PRACTICE only
+
+// The four colours. The KEY of each entry is the colour NAME used internally
+// and stored in the data; the VALUE is the on-screen ink colour.
+// NOTE on yellow: pure yellow is nearly invisible on a white page, so we use a
+// deep amber. The exact hue does not matter for the Stroop effect — only that
+// the four colours are clearly distinguishable and consistent with the legend.
+const COLORS = {
+  red:    "#D7191C",
+  green:  "#1A9641",
+  blue:   "#2C7BB6",
+  yellow: "#E0A100"
+};
+
+// Fixed display order of the four colours (used for the legend + balancing).
+const COLOR_ORDER = ["red", "green", "blue", "yellow"];
+
+// The word shown on screen for each colour. Edit these to translate the task
+// into another language (e.g. red -> "ROT"). The Stroop effect comes from the
+// word being READABLE, so use real colour words in your students' language.
+const WORD_LABEL = {
+  red:    "RED",
+  green:  "GREEN",
+  blue:   "BLUE",
+  yellow: "YELLOW"
+};
+
+// Response keys: which keyboard key means which colour.
+// We use D F J K (the home row, two per hand). These four keys sit in the SAME
+// physical position on QWERTY, AZERTY and QWERTZ keyboards, so the task works
+// regardless of the student's keyboard layout. F and J have a tactile bump,
+// which makes them easy to find without looking. A legend is always on screen.
+const KEYS = {
+  red:    "d",
+  green:  "f",
+  blue:   "j",
+  yellow: "k"
+};
+// The list of keys jsPsych will accept as a response.
+const RESPONSE_KEYS = [KEYS.red, KEYS.green, KEYS.blue, KEYS.yellow];
+
+
+/* =======================================================================
+   3) EDITABLE TEXT BLOCKS — consent, instructions, debrief
+   -----------------------------------------------------------------------
+   These are ordinary HTML strings. Edit the wording freely; keep the
+   surrounding quotes and back-ticks. Your ethics board may require specific
+   consent wording — paste it into CONSENT_HTML below.
+   ======================================================================= */
+
+// ---- CONSENT (shown first; an explicit "I agree" is required) ------------
+// >>> EDIT HERE >>>  (consent text)
+const CONSENT_HTML = `
+  <h1>Before you start</h1>
+  <div class="consent-box">
+    <p><strong>What this is.</strong> This is a short colour–word reaction-time
+    task for our research-methods workshop. It takes about 5–10 minutes.</p>
+
+    <p><strong>Voluntary.</strong> Taking part is completely voluntary. You may
+    stop at any time by simply closing this browser tab, with no consequences.</p>
+
+    <p><strong>Your data.</strong> We record only your responses and reaction
+    times. Your student number is collected for attendance/logistics only and is
+    removed before the data are analysed; the data used in class are anonymous.</p>
+
+    <p><strong>Use.</strong> The anonymised, pooled data are used for teaching in
+    this course only.</p>
+
+    <p>If you understand the above and agree to take part, choose
+    <em>"I agree"</em>. If not, choose <em>"I do not agree"</em>.</p>
+  </div>
+`;
+
+// ---- Shown if the student declines consent -------------------------------
+const DECLINE_HTML = `
+  <div class="msg">
+    <h1>No problem</h1>
+    <p>You chose not to take part. Nothing has been recorded. You can close this
+    tab. If this was a mistake, just reload the page.</p>
+  </div>
+`;
+
+// ---- STUDENT NUMBER prompt -----------------------------------------------
+const STUDENT_NUMBER_PROMPT =
+  "Please type your student number (for attendance only — it is removed before analysis):";
+
+// ---- INSTRUCTIONS (the colour legend is added automatically below) -------
+// >>> EDIT HERE >>>  (instructions text)
+const INSTRUCTIONS_HTML = `
+  <h1>Instructions</h1>
+  <p style="max-width:700px;margin:0 auto 14px;line-height:1.55;">
+    Words will appear one at a time, printed in different ink colours. Your job
+    is to respond to the <strong>INK COLOUR</strong> of the word — <strong>not</strong>
+    the word itself.
+  </p>
+  <p style="max-width:700px;margin:0 auto 14px;line-height:1.55;">
+    For example, if you see the word <span style="color:${COLORS.red};font-weight:bold;">BLUE</span>
+    printed in red ink, the correct answer is <strong>red</strong>.
+  </p>
+  <p style="max-width:700px;margin:0 auto 14px;line-height:1.55;">
+    Place your fingers on the four keys below and answer as
+    <strong>quickly and accurately</strong> as you can. Keep the legend in mind —
+    it stays on screen the whole time.
+  </p>
+`;
+
+// ---- DEBRIEF / THANK-YOU (shown only after data save succeeds) -----------
+// >>> EDIT HERE >>>  (debrief text)
+const DEBRIEF_HTML = `
+  <div style="max-width:720px;margin:0 auto;text-align:left;line-height:1.6;">
+    <h1 style="text-align:center;">✓ Your data were saved — thank you!</h1>
+    <p><strong>What you just did.</strong> This is the classic <em>Stroop task</em>.
+    When the ink colour matches the word (e.g. <span style="color:${COLORS.green};font-weight:bold;">GREEN</span>
+    in green ink) we call the trial <em>congruent</em>; when they differ
+    (e.g. <span style="color:${COLORS.red};font-weight:bold;">GREEN</span> in red ink)
+    we call it <em>incongruent</em>.</p>
+    <p><strong>What we expect to find.</strong> Reading is so automatic that the
+    written word interferes with naming the ink colour. People are usually
+    <strong>slower</strong> (and make more mistakes) on incongruent trials than on
+    congruent ones. That slowdown is the <strong>Stroop effect</strong> — and it is
+    what your group will measure from the pooled class data.</p>
+    <p>You can now close this tab. See you in class!</p>
+  </div>
+`;
+
+// ---- Full-page messages for the two "cannot run" situations --------------
+const MOBILE_HTML = `
+  <div class="msg">
+    <h1>Please use a laptop or desktop</h1>
+    <p>This task measures reaction times in milliseconds and needs a
+    <strong>physical keyboard</strong>. It cannot run on a phone or tablet.</p>
+    <p>Please open this same link again on a laptop or desktop computer.</p>
+  </div>
+`;
+
+function badGroupHTML() {
+  return `
+    <div class="msg">
+      <h1>This link is missing your group code</h1>
+      <p>Your personal task link must end with your group letter, for example
+      <code>?group=A</code>.</p>
+      <p>Please go back and open the <strong>exact link your instructor gave your
+      group</strong> (groups A–F each have their own link). Do not edit the link
+      by hand.</p>
+    </div>`;
+}
+
+
+/* =======================================================================
+   4) RUNTIME STATE  (filled in while the task runs — do not edit)
+   ======================================================================= */
+let GROUP = null;             // the validated group letter, e.g. "A"
+let STUDENT_NUMBER = "";      // trimmed student number
+let jsPsych = null;           // the jsPsych instance
+
+
+/* =======================================================================
+   5) HELPER: the on-screen colour legend (key -> colour swatch)
+   ======================================================================= */
+function legendHTML() {
+  let items = "";
+  COLOR_ORDER.forEach(function (c) {
+    items +=
+      '<div style="display:inline-block;margin:0 16px;text-align:center;vertical-align:top;">' +
+        '<div style="width:40px;height:40px;border-radius:8px;margin:0 auto 8px;' +
+              'background:' + COLORS[c] + ';border:1px solid #999;"></div>' +
+        '<span class="kbd">' + KEYS[c].toUpperCase() + '</span>' +
+      '</div>';
+  });
+  return '<div style="margin-top:46px;">' + items + '</div>';
+}
+
+
+/* =======================================================================
+   6) HELPER: build a balanced list of trials
+   -----------------------------------------------------------------------
+   Half congruent, half incongruent. The ink colours are spread evenly across
+   the four colours. On incongruent trials the WORD is a randomly chosen
+   different colour. jsPsych shuffles the final order at run time.
+   ======================================================================= */
+function buildTrials(nTotal) {
+  const half = Math.floor(nTotal / 2);   // congruent count == incongruent count
+  const trials = [];
+
+  // Congruent trials: word == ink, evenly across the four colours.
+  for (let i = 0; i < half; i++) {
+    const c = COLOR_ORDER[i % COLOR_ORDER.length];
+    trials.push({ word: c, ink: c, condition: "congruent" });
+  }
+  // Incongruent trials: ink evenly across colours, word = a different colour.
+  for (let j = 0; j < (nTotal - half); j++) {
+    const ink = COLOR_ORDER[j % COLOR_ORDER.length];
+    const others = COLOR_ORDER.filter(function (x) { return x !== ink; });
+    const word = others[Math.floor(Math.random() * others.length)];
+    trials.push({ word: word, ink: ink, condition: "incongruent" });
+  }
+  return trials;
+}
+
+
+/* =======================================================================
+   7) HELPER: a single Stroop stimulus trial (used by practice + test)
+   ======================================================================= */
+function stimulusTrial(taskLabel, gapMs) {
+  return {
+    type: jsPsychHtmlKeyboardResponse,
+    // Show the word in its ink colour, with the legend underneath.
+    stimulus: function () {
+      const word = jsPsych.timelineVariable("word");
+      const ink  = jsPsych.timelineVariable("ink");
+      return (
+        '<div style="font-size:64px;font-weight:bold;height:90px;line-height:90px;color:' +
+          COLORS[ink] + ';">' + WORD_LABEL[word] + "</div>" +
+        legendHTML()
+      );
+    },
+    choices: RESPONSE_KEYS,        // only D F J K count as responses
+    trial_duration: null,          // wait until the student responds
+    post_trial_gap: gapMs,         // blank inter-trial gap after this trial
+    data: {
+      task: taskLabel,             // "practice" or "test"
+      word: jsPsych.timelineVariable("word"),
+      ink: jsPsych.timelineVariable("ink"),
+      condition: jsPsych.timelineVariable("condition")
+    },
+    // Score the response the instant the trial ends.
+    on_finish: function (data) {
+      data.correct_response = KEYS[data.ink];                       // the key that WOULD be correct
+      data.correct = data.response === data.correct_response ? 1 : 0; // 1 = correct, 0 = wrong
+    }
+  };
+}
+
+
+/* =======================================================================
+   8) BUILD AND RUN THE WHOLE EXPERIMENT
+   ======================================================================= */
+function runExperiment() {
+
+  jsPsych = initJsPsych({
+    display_element: "jspsych-target",
+    // Shown after the very last screen.
+    on_finish: function () {
+      jsPsych.getDisplayElement().innerHTML =
+        '<div class="msg"><h1>All done</h1><p>You can close this tab now.</p></div>';
+    }
+  });
+
+  // ---- Consent (explicit "I agree" required) -----------------------------
+  const consent = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: CONSENT_HTML,
+    choices: ["I agree", "I do not agree"],
+    on_finish: function (data) {
+      // Button index 1 == "I do not agree" -> stop the whole experiment.
+      if (data.response === 1) {
+        jsPsych.endExperiment(DECLINE_HTML);
+      }
+    }
+  };
+
+  // ---- Student number (single, required, non-empty text field) -----------
+  const studentNumber = {
+    type: jsPsychSurveyText,
+    questions: [
+      { prompt: STUDENT_NUMBER_PROMPT, name: "student_number", required: true }
+    ],
+    on_finish: function (data) {
+      STUDENT_NUMBER = (data.response.student_number || "").trim();
+    }
+  };
+
+  // ---- Instructions (with the colour legend) -----------------------------
+  const instructions = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: INSTRUCTIONS_HTML + legendHTML(),
+    choices: ["Start practice"]
+  };
+
+  // ---- Fixation cross ----------------------------------------------------
+  const fixation = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: '<div style="font-size:64px;height:90px;line-height:90px;">+</div>',
+    choices: "NO_KEYS",
+    trial_duration: FIXATION_MS,
+    data: { task: "fixation" }
+  };
+
+  // ---- Practice feedback (PRACTICE block only) ---------------------------
+  const feedback = {
+    type: jsPsychHtmlKeyboardResponse,
+    choices: "NO_KEYS",
+    trial_duration: FEEDBACK_MS,
+    post_trial_gap: ITI_MS,
+    stimulus: function () {
+      const last = jsPsych.data.get().last(1).values()[0];
+      if (last.correct === 1) {
+        return '<div style="font-size:40px;color:' + COLORS.green + ';">Correct!</div>';
+      }
+      return '<div style="font-size:40px;color:' + COLORS.red + ';">Incorrect</div>';
+    },
+    data: { task: "feedback" }
+  };
+
+  // ---- Practice procedure (fixation -> stimulus -> feedback) --------------
+  const practiceProcedure = {
+    timeline: [fixation, stimulusTrial("practice", 0), feedback],
+    timeline_variables: buildTrials(PRACTICE_TRIALS),
+    randomize_order: true
+  };
+
+  // ---- Transition between practice and the real task ---------------------
+  const practiceEnd = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus:
+      "<h1>Practice complete</h1>" +
+      "<p style='max-width:680px;margin:0 auto;line-height:1.55;'>Good. The real " +
+      "task is exactly the same, but there is <strong>no feedback</strong> and it " +
+      "is a little longer. Keep answering by the <strong>ink colour</strong>, as " +
+      "fast and accurately as you can.</p>",
+    choices: ["Start the task"]
+  };
+
+  // ---- Test procedure (fixation -> stimulus, no feedback) ----------------
+  const testProcedure = {
+    timeline: [fixation, stimulusTrial("test", ITI_MS)],
+    timeline_variables: buildTrials(TEST_TRIALS),
+    randomize_order: true
+  };
+
+  // ---- Save screen: shows "Saving…" and fires the single POST ------------
+  // It waits forever (trial_duration: null, no keys) and only advances when
+  // attemptSave() calls jsPsych.finishTrial() after a successful save.
+  const saveData = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: "<p>Preparing to save…</p>",
+    choices: "NO_KEYS",
+    trial_duration: null,
+    on_load: attemptSave
+  };
+
+  // ---- Debrief / thank-you (only reached after a successful save) --------
+  const debrief = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: DEBRIEF_HTML,
+    choices: ["Finish"]
+  };
+
+  // ---- The full ordered timeline -----------------------------------------
+  const timeline = [
+    consent,
+    studentNumber,
+    instructions,
+    practiceProcedure,
+    practiceEnd,
+    testProcedure,
+    saveData,
+    debrief
+  ];
+
+  jsPsych.run(timeline);
+}
+
+
+/* =======================================================================
+   9) SAVING THE DATA  —  ONE POST, sent as a "simple" request
+   -----------------------------------------------------------------------
+   IMPORTANT (do not "fix" this): we send Content-Type
+   "text/plain;charset=utf-8" with a JSON STRING as the body. This makes the
+   request a CORS "simple request", so the browser does NOT send a preflight
+   (OPTIONS) request. Google Apps Script web apps cannot answer preflights, so
+   a normal application/json fetch would fail. The Apps Script reads
+   e.postData.contents and JSON.parse()s it.
+   ======================================================================= */
+function attemptSave() {
+  const display = jsPsych.getDisplayElement();
+
+  // Friendly guard for setup time: refuse to "save" into a placeholder URL.
+  if (ENDPOINT_URL.indexOf("PASTE_") !== -1) {
+    showSaveError(
+      "The data endpoint has not been set yet. The instructor needs to paste the " +
+      "Apps Script web-app URL into ENDPOINT_URL near the top of index.html."
+    );
+    return;
+  }
+
+  display.innerHTML = '<div class="msg"><p style="font-size:22px;">Saving your data… ' +
+                      'please wait. ⏳</p><p>Do not close this tab.</p></div>';
+
+  // Gather ONLY the test trials (practice/fixation/feedback are not analysed).
+  const testData = jsPsych.data.get().filter({ task: "test" }).values();
+  const trials = testData.map(function (d, i) {
+    return {
+      trial_index: i + 1,                 // 1, 2, 3, … in presentation order
+      condition: d.condition,             // "congruent" / "incongruent"
+      word: d.word,                       // the colour word shown
+      ink_color: d.ink,                   // the ink colour (the correct answer)
+      response_key: d.response,           // the key the student pressed
+      correct_response: d.correct_response, // the key that would have been correct
+      correct: d.correct,                 // 1 = correct, 0 = wrong
+      rt: Math.round(d.rt)                // reaction time in milliseconds
+    };
+  });
+
+  // The POST body: one object with the student number, group, and all trials.
+  const payload = {
+    student_number: STUDENT_NUMBER,
+    group: GROUP,
+    trials: trials
+  };
+
+  fetch(ENDPOINT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" }, // <-- avoids preflight
+    body: JSON.stringify(payload)
+  })
+    .then(function (response) { return response.json(); })
+    .then(function (result) {
+      if (result && result.status === "success") {
+        jsPsych.finishTrial();   // success -> advance to the debrief screen
+      } else {
+        throw new Error(result && result.message ? result.message : "Unexpected server response.");
+      }
+    })
+    .catch(function (err) {
+      showSaveError(err);        // network/server problem -> offer a retry
+    });
+}
+
+// Shows a clear failure message with a "Try again" button.
+function showSaveError(err) {
+  const display = jsPsych.getDisplayElement();
+  display.innerHTML =
+    '<div class="msg">' +
+      '<h1 style="color:#b00020;">⚠️ Saving did not work</h1>' +
+      "<p>Your responses are still safe in this browser tab. Please check your " +
+      "internet connection and try again.</p>" +
+      '<p style="color:#666;font-size:14px;">Technical detail: ' + String(err) + "</p>" +
+      '<p>If it keeps failing, please tell your instructor and keep this tab open.</p>' +
+      '<button id="retry-btn" class="jspsych-btn">Try again</button>' +
+    "</div>";
+  document.getElementById("retry-btn").addEventListener("click", attemptSave);
+}
+
+
+/* =======================================================================
+   10) STARTUP GATES  —  run only on a keyboard device, with a valid group
+   ======================================================================= */
+
+// True when the device looks touch-only (a phone/tablet) with no real mouse
+// or trackpad. A laptop with a touchscreen still has a "fine" pointer, so it
+// is NOT blocked.
+function isTouchOnlyDevice() {
+  const coarse  = window.matchMedia("(pointer: coarse)").matches;
+  const anyFine = window.matchMedia("(any-pointer: fine)").matches;
+  const mobileUA = /Mobi|Android|iPhone|iPad|iPod|Tablet/i.test(navigator.userAgent);
+  return (coarse && !anyFine) || (mobileUA && !anyFine);
+}
+
+// Read and validate ?group= from the URL. Returns "A".."F" or null.
+function getGroupFromURL() {
+  const params = new URLSearchParams(window.location.search);
+  const g = (params.get("group") || "").trim().toUpperCase();
+  return VALID_GROUPS.indexOf(g) !== -1 ? g : null;
+}
+
+// Show a full-page message instead of the experiment.
+function showBlocker(html) {
+  document.getElementById("jspsych-target").style.display = "none";
+  const blocker = document.getElementById("blocker");
+  blocker.style.display = "block";
+  blocker.innerHTML = html;
+}
+
+// Decide what to do as soon as the page is ready.
+window.addEventListener("DOMContentLoaded", function () {
+  if (isTouchOnlyDevice()) {           // phone / tablet -> ask for a computer
+    showBlocker(MOBILE_HTML);
+    return;
+  }
+  const group = getGroupFromURL();     // missing/invalid ?group= -> ask for the right link
+  if (!group) {
+    showBlocker(badGroupHTML());
+    return;
+  }
+  GROUP = group;                       // all good -> run the task
+  runExperiment();
+});
+</script>
+</body>
+</html>
