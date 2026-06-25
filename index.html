@@ -66,6 +66,17 @@
       font-family: monospace;
     }
     .jspsych-content { max-width: 860px; }
+    /* Make all jsPsych buttons (consent, instructions, "Start the task",
+       debrief, etc.) larger and easier to click. */
+    .jspsych-btn {
+      font-size: 19px;
+      padding: 14px 34px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    /* Always leave clear space above a button group so the button never
+       crowds the text or the colour legend above it. */
+    #jspsych-html-button-response-btngroup { margin-top: 44px; }
   </style>
 </head>
 
@@ -397,11 +408,11 @@ function runExperiment() {
   };
 
   // ---- Instructions (with the colour legend) -----------------------------
-  // The trailing spacer div pushes the "Start practice" button clear of the
-  // colour legend so the button does not touch the F/J swatches.
+  // Spacing below the legend is handled by the global button-group margin in
+  // the <style> block, so the "Start practice" button clears the F/J swatches.
   const instructions = {
     type: jsPsychHtmlButtonResponse,
-    stimulus: INSTRUCTIONS_HTML + legendHTML() + '<div style="height:40px;"></div>',
+    stimulus: INSTRUCTIONS_HTML + legendHTML(),
     choices: ["Start practice"]
   };
 
