@@ -28,6 +28,11 @@
     }
     /* The box used for full-screen messages (wrong group, mobile, etc.). */
     #blocker { display: none; }
+    /* Make the experiment area fill the whole window. Without a height here,
+       jsPsych's content collapses to the top of the page; giving it the full
+       viewport height lets jsPsych center every screen (stimulus, fixation,
+       feedback, buttons) vertically. */
+    #jspsych-target { height: 100vh; }
     .msg {
       max-width: 720px;
       margin: 8vh auto;
@@ -392,9 +397,11 @@ function runExperiment() {
   };
 
   // ---- Instructions (with the colour legend) -----------------------------
+  // The trailing spacer div pushes the "Start practice" button clear of the
+  // colour legend so the button does not touch the F/J swatches.
   const instructions = {
     type: jsPsychHtmlButtonResponse,
-    stimulus: INSTRUCTIONS_HTML + legendHTML(),
+    stimulus: INSTRUCTIONS_HTML + legendHTML() + '<div style="height:40px;"></div>',
     choices: ["Start practice"]
   };
 
@@ -484,14 +491,30 @@ function runExperiment() {
 
 
 /* =======================================================================
-   9) SAVING THE DATA  —  ONE POST, sent as a "simple" request
+   9) SAVING THE DATA  —  ONE POST, sent as a "simple" no-cors request
    -----------------------------------------------------------------------
-   IMPORTANT (do not "fix" this): we send Content-Type
-   "text/plain;charset=utf-8" with a JSON STRING as the body. This makes the
-   request a CORS "simple request", so the browser does NOT send a preflight
-   (OPTIONS) request. Google Apps Script web apps cannot answer preflights, so
-   a normal application/json fetch would fail. The Apps Script reads
-   e.postData.contents and JSON.parse()s it.
+   IMPORTANT (do not "fix" this back):
+
+   1) We send Content-Type "text/plain;charset=utf-8" with a JSON STRING as
+      the body. This makes the request a CORS "simple request", so the browser
+      does NOT send a preflight (OPTIONS) request. Apps Script web apps cannot
+      answer preflights. The Apps Script reads e.postData.contents and
+      JSON.parse()s it.
+
+   2) We use mode: "no-cors". Apps Script answers a POST by REDIRECTING to
+      script.googleusercontent.com, and the browser will not let page
+      JavaScript READ that cross-origin reply — trying to read it throws
+      "TypeError: Failed to fetch" EVEN THOUGH the row was already written to
+      your Sheet. So we deliberately do not read the reply. With no-cors the
+      fetch promise resolves once the request has been delivered (the data is
+      saved at that point), and it only rejects on a genuine network failure
+      (e.g. the student is offline). We therefore treat "promise resolved" as
+      success and offer a retry only on a real network error.
+
+      Trade-off: because the reply is unreadable, "saved" here means "delivered
+      to Google", not "the server confirmed it". The doPost in Code.gs is
+      written so that a delivered request reliably appends the rows; to be 100%
+      sure, glance at the "raw" tab of your Sheet after a test run.
    ======================================================================= */
 function attemptSave() {
   const display = jsPsych.getDisplayElement();
@@ -532,19 +555,17 @@ function attemptSave() {
 
   fetch(ENDPOINT_URL, {
     method: "POST",
+    mode: "no-cors",                                         // <-- do not try to read the reply
     headers: { "Content-Type": "text/plain;charset=utf-8" }, // <-- avoids preflight
     body: JSON.stringify(payload)
   })
-    .then(function (response) { return response.json(); })
-    .then(function (result) {
-      if (result && result.status === "success") {
-        jsPsych.finishTrial();   // success -> advance to the debrief screen
-      } else {
-        throw new Error(result && result.message ? result.message : "Unexpected server response.");
-      }
+    .then(function () {
+      // The request was delivered (and the row written). We cannot read the
+      // reply in no-cors mode, so a resolved promise IS our success signal.
+      jsPsych.finishTrial();     // advance to the debrief screen
     })
     .catch(function (err) {
-      showSaveError(err);        // network/server problem -> offer a retry
+      showSaveError(err);        // genuine network failure (e.g. offline) -> retry
     });
 }
 
