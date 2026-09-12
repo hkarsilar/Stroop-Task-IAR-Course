@@ -278,6 +278,10 @@ const MOBILE_HTML = `
 // Everyone uses the same link, so the first thing we ask for is the group the
 // instructor assigned. The dropdown is built from VALID_GROUPS, so adding or
 // removing a group letter up in section 2 is all you ever need to edit.
+// >>> EDIT HERE >>>  (name of wherever your students look their group up)
+const GROUP_LOOKUP_HTML =
+  "your group is listed on <strong>Brightspace</strong>";
+
 function groupSelectHTML() {
   let options = '<option value="" selected>— choose your group —</option>';
   VALID_GROUPS.forEach(function (g) {
@@ -286,13 +290,30 @@ function groupSelectHTML() {
   return `
     <h1>Which group are you in?</h1>
     <p style="max-width:680px;margin:0 auto 18px;line-height:1.55;">
-      Please choose the group your instructor assigned you to. If you are not
-      sure, check before you continue — you cannot change it later.
+      Please choose the group your instructor assigned you to. If you do not
+      know which group you are in, ${GROUP_LOOKUP_HTML} — please check there
+      before you continue.
     </p>
     <select id="group-select" style="font-size:19px;padding:10px 14px;
             border:1px solid #888;border-radius:8px;background:#fff;">
       ${options}
     </select>`;
+}
+
+// ---- GROUP CONFIRMATION (second screen — "did you really mean X?") -------
+// The group letter is self-reported now, so we read it back to the student
+// and make them confirm it. Answering "No" returns them to the dropdown.
+function groupConfirmHTML() {
+  return `
+    <h1>Please confirm your group</h1>
+    <p style="max-width:680px;margin:0 auto 14px;line-height:1.55;">
+      You selected <strong style="font-size:22px;">Group ${GROUP}</strong>.
+    </p>
+    <p style="max-width:680px;margin:0 auto 14px;line-height:1.55;">
+      Your data will be pooled with the rest of Group ${GROUP}, and this
+      <strong>cannot be changed after you continue</strong>. If you are not
+      certain, choose "No" and check — ${GROUP_LOOKUP_HTML}.
+    </p>`;
 }
 
 
@@ -413,6 +434,7 @@ function runExperiment() {
         return VALID_GROUPS.indexOf(select.value) !== -1 ? select.value : null;
       }
 
+      GROUP = null;                    // fresh start, also when coming back from "No"
       button.disabled = true;          // greyed out until a group is picked
       // Belt and braces: swallow any click on the button area while no group
       // is chosen, so the screen cannot be skipped however the button is hit.
@@ -429,6 +451,30 @@ function runExperiment() {
         GROUP = chosenGroup();
         button.disabled = !GROUP;
       });
+    }
+  };
+
+  // ---- Group confirmation ------------------------------------------------
+  // stimulus is a FUNCTION so the text is built when the trial runs, i.e. after
+  // GROUP has been set on the screen before it.
+  let groupConfirmed = false;
+  const groupConfirm = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: groupConfirmHTML,
+    choices: function () {
+      return ["Yes — I am in Group " + GROUP, "No — go back"];
+    },
+    on_finish: function (data) {
+      // Button index 0 == "Yes". Anything else sends them round again.
+      groupConfirmed = data.response === 0;
+    }
+  };
+
+  // Ask for the group, then confirm it; repeat until the student says "Yes".
+  const groupBlock = {
+    timeline: [groupChoice, groupConfirm],
+    loop_function: function () {
+      return !groupConfirmed;          // true = run the pair again
     }
   };
 
@@ -536,7 +582,7 @@ function runExperiment() {
 
   // ---- The full ordered timeline -----------------------------------------
   const timeline = [
-    groupChoice,
+    groupBlock,
     consent,
     studentNumber,
     instructions,
