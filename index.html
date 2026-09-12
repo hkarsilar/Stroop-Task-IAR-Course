@@ -26,7 +26,7 @@
       color: #1a1a1a;
       margin: 0;
     }
-    /* The box used for full-screen messages (wrong group, mobile, etc.). */
+    /* The box used for full-screen messages (mobile device, etc.). */
     #blocker { display: none; }
     /* Make the experiment area fill the whole window. Without a height here,
        jsPsych's content collapses to the top of the page; giving it the full
@@ -77,11 +77,14 @@
     /* Always leave clear space above a button group so the button never
        crowds the text or the colour legend above it. */
     #jspsych-html-button-response-btngroup { margin-top: 44px; }
+    /* Greyed-out look for a button that is not usable yet (the "Continue"
+       button on the group screen, before a group has been chosen). */
+    .jspsych-btn:disabled { opacity: 0.45; cursor: not-allowed; }
   </style>
 </head>
 
 <body>
-  <!-- Messages (wrong group / mobile / setup error) are written here. -->
+  <!-- Messages (mobile device / setup error) are written here. -->
   <div id="blocker"></div>
   <!-- jsPsych draws the experiment here. -->
   <div id="jspsych-target"></div>
@@ -121,10 +124,11 @@ const ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbxuqk858tLxdquZ8bh
    2) EXPERIMENT SETTINGS — safe, sensible defaults. Change numbers freely.
    ======================================================================= */
 
-// Valid group codes. Each group opens the task with a different link, e.g.
-//   https://YOURNAME.github.io/stroop/?group=A
-// The code reads ?group=… from the URL. Nothing is guessed: a missing or
-// wrong code shows an error instead of silently picking a real group.
+// Valid group codes. EVERY student opens the SAME link, e.g.
+//   https://YOURNAME.github.io/stroop/
+// The first screen asks the student to pick their group from a dropdown.
+// Nothing is guessed: the task does not start until one of these letters has
+// been chosen, so a group can never be missing or invented.
 const VALID_GROUPS = ["A", "B", "C", "D", "E", "F"];
 
 // Number of trials.  Keep these EVEN and ideally divisible by 4 so the
@@ -270,23 +274,32 @@ const MOBILE_HTML = `
   </div>
 `;
 
-function badGroupHTML() {
+// ---- GROUP CHOICE (the very first screen, shown before consent) ---------
+// Everyone uses the same link, so the first thing we ask for is the group the
+// instructor assigned. The dropdown is built from VALID_GROUPS, so adding or
+// removing a group letter up in section 2 is all you ever need to edit.
+function groupSelectHTML() {
+  let options = '<option value="" selected>— choose your group —</option>';
+  VALID_GROUPS.forEach(function (g) {
+    options += '<option value="' + g + '">Group ' + g + '</option>';
+  });
   return `
-    <div class="msg">
-      <h1>This link is missing your group code</h1>
-      <p>Your personal task link must end with your group letter, for example
-      <code>?group=A</code>.</p>
-      <p>Please go back and open the <strong>exact link your instructor gave your
-      group</strong> (groups A–F each have their own link). Do not edit the link
-      by hand.</p>
-    </div>`;
+    <h1>Which group are you in?</h1>
+    <p style="max-width:680px;margin:0 auto 18px;line-height:1.55;">
+      Please choose the group your instructor assigned you to. If you are not
+      sure, check before you continue — you cannot change it later.
+    </p>
+    <select id="group-select" style="font-size:19px;padding:10px 14px;
+            border:1px solid #888;border-radius:8px;background:#fff;">
+      ${options}
+    </select>`;
 }
 
 
 /* =======================================================================
    4) RUNTIME STATE  (filled in while the task runs — do not edit)
    ======================================================================= */
-let GROUP = null;             // the validated group letter, e.g. "A"
+let GROUP = null;             // the group letter chosen on screen 1, e.g. "A"
 let STUDENT_NUMBER = "";      // trimmed student number
 let jsPsych = null;           // the jsPsych instance
 
@@ -382,6 +395,42 @@ function runExperiment() {
         '<div class="msg"><h1>All done</h1><p>You can close this tab now.</p></div>';
     }
   });
+
+  // ---- Group choice (shown BEFORE consent) -------------------------------
+  // The "Continue" button starts disabled and only becomes usable once a real
+  // group letter is picked, so GROUP can never be left empty or invalid.
+  const groupChoice = {
+    type: jsPsychHtmlButtonResponse,
+    stimulus: groupSelectHTML(),
+    choices: ["Continue"],
+    on_load: function () {
+      const display  = jsPsych.getDisplayElement();
+      const select   = display.querySelector("#group-select");
+      const btngroup = display.querySelector("#jspsych-html-button-response-btngroup");
+      const button   = btngroup.querySelector("button");
+
+      function chosenGroup() {
+        return VALID_GROUPS.indexOf(select.value) !== -1 ? select.value : null;
+      }
+
+      button.disabled = true;          // greyed out until a group is picked
+      // Belt and braces: swallow any click on the button area while no group
+      // is chosen, so the screen cannot be skipped however the button is hit.
+      btngroup.addEventListener("click", function (e) {
+        if (!chosenGroup()) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }, true);                        // capture phase -> runs before jsPsych's own handler
+
+      // Store the choice as it is made: jsPsych clears the screen before
+      // on_finish runs, so the dropdown is no longer readable by then.
+      select.addEventListener("change", function () {
+        GROUP = chosenGroup();
+        button.disabled = !GROUP;
+      });
+    }
+  };
 
   // ---- Consent (explicit "I agree" required) -----------------------------
   const consent = {
@@ -487,6 +536,7 @@ function runExperiment() {
 
   // ---- The full ordered timeline -----------------------------------------
   const timeline = [
+    groupChoice,
     consent,
     studentNumber,
     instructions,
@@ -641,7 +691,7 @@ function showSaveError(err) {
 
 
 /* =======================================================================
-   10) STARTUP GATES  —  run only on a keyboard device, with a valid group
+   10) STARTUP GATES  —  run only on a device with a real keyboard
    ======================================================================= */
 
 // True when the device looks touch-only (a phone/tablet) with no real mouse
@@ -652,13 +702,6 @@ function isTouchOnlyDevice() {
   const anyFine = window.matchMedia("(any-pointer: fine)").matches;
   const mobileUA = /Mobi|Android|iPhone|iPad|iPod|Tablet/i.test(navigator.userAgent);
   return (coarse && !anyFine) || (mobileUA && !anyFine);
-}
-
-// Read and validate ?group= from the URL. Returns "A".."F" or null.
-function getGroupFromURL() {
-  const params = new URLSearchParams(window.location.search);
-  const g = (params.get("group") || "").trim().toUpperCase();
-  return VALID_GROUPS.indexOf(g) !== -1 ? g : null;
 }
 
 // Show a full-page message instead of the experiment.
@@ -675,13 +718,7 @@ window.addEventListener("DOMContentLoaded", function () {
     showBlocker(MOBILE_HTML);
     return;
   }
-  const group = getGroupFromURL();     // missing/invalid ?group= -> ask for the right link
-  if (!group) {
-    showBlocker(badGroupHTML());
-    return;
-  }
-  GROUP = group;                       // all good -> run the task
-  runExperiment();
+  runExperiment();                     // the task itself asks for the group
 });
 </script>
 </body>
