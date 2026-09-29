@@ -618,9 +618,31 @@ function runExperiment() {
      there, the student sees a clear error and a Try-again button — no lying.
 
    The result: "saved" on screen means the data are really in your Sheet.
+
+   RETRYING ON A BAD CONNECTION (e.g. on a train)
+     - Every request has a time limit, so a request stuck on a dead
+       connection ends in the error screen with a Try-again button instead
+       of an endless "Saving…" screen.
+     - Only one save attempt runs at a time, and a request that has been
+       given up on is fully detached, so a late answer from an old attempt
+       can never replace the screen of a newer one.
+     - "Try again" first ASKS the Sheet whether the data already arrived —
+       often the data got through and only the confirmation was lost — and
+       only sends them again if they are not there, so a flaky connection
+       does not fill the Sheet with duplicate rows.
+     - When the browser reports that the connection is back, the page
+       retries by itself.
    ======================================================================= */
+const SEND_TIMEOUT_MS   = 30000;  // give up on the POST (step 1) after 30 s
+const VERIFY_TIMEOUT_MS = 15000;  // give up on the verify (step 2) after 15 s
+
+let savePayload   = null;         // the data to send, built once so every retry sends the same
+let saveSent      = false;        // true once a POST has gone out (data MAY be in the Sheet)
+let saveBusy      = false;        // true while a save attempt is running
+let saveConfirmed = false;        // true once the Sheet has confirmed our rows
+
 function attemptSave() {
-  const display = jsPsych.getDisplayElement();
+  if (saveBusy || saveConfirmed) return;   // one attempt at a time; never finish twice
 
   // Friendly guard for setup time: refuse to "save" into a placeholder URL.
   if (ENDPOINT_URL.indexOf("PASTE_") !== -1) {
@@ -631,9 +653,53 @@ function attemptSave() {
     return;
   }
 
-  display.innerHTML = '<div class="msg"><p style="font-size:22px;">Saving your data… ' +
-                      'please wait. ⏳</p><p>Do not close this tab.</p></div>';
+  saveBusy = true;
+  jsPsych.getDisplayElement().innerHTML =
+    '<div class="msg"><p style="font-size:22px;">Saving your data… ' +
+    'please wait. ⏳</p><p>Do not close this tab.</p></div>';
 
+  if (!savePayload) { savePayload = collectPayload(); }
+  const expectedRows = savePayload.trials.length;
+
+  // On a retry, first check whether an earlier send already arrived. If the
+  // check itself fails we cannot tell, so we send again to be safe.
+  const alreadySaved = !saveSent ? Promise.resolve(false) :
+    countSavedRows().then(
+      function (rows) { return rows >= expectedRows; },
+      function () { return false; }
+    );
+
+  alreadySaved
+    .then(function (saved) {
+      if (saved) { return; }
+      saveSent = true;
+      // STEP 1 — send, then give the server a moment to finish writing.
+      return sendPayload(savePayload)
+        .then(function () { return wait(800); })
+        // STEP 2 — verify the rows are really in the Sheet.
+        .then(countSavedRows)
+        .then(function (rows) {
+          if (rows < expectedRows) {
+            throw new Error("The server could not confirm your data were stored (it found " +
+                            rows + " saved rows). Please try again.");
+          }
+        });
+    })
+    .then(
+      function () {
+        saveBusy = false;
+        saveConfirmed = true;
+        jsPsych.finishTrial();   // confirmed in the Sheet -> show the debrief
+      },
+      function (err) {
+        saveBusy = false;
+        showSaveError(err);      // honest error with a Try-again button
+      }
+    );
+}
+
+// Builds the POST body: the student number, group, and all test trials.
+function collectPayload() {
   // Gather ONLY the test trials (practice/fixation/feedback are not analysed).
   const testData = jsPsych.data.get().filter({ task: "test" }).values();
   const trials = testData.map(function (d, i) {
@@ -650,74 +716,93 @@ function attemptSave() {
   });
 
   // The POST body: one object with the student number, group, and all trials.
-  const payload = {
+  return {
     student_number: STUDENT_NUMBER,
     group: GROUP,
     trials: trials
   };
+}
 
-  // STEP 1 — send the data (we cannot read this reply; see the note above).
-  fetch(ENDPOINT_URL, {
+// STEP 1 — send the data (we cannot read this reply; see the note above).
+// Resolves once the server has answered; rejects if the send fails or takes
+// longer than SEND_TIMEOUT_MS (e.g. a connection that died in a tunnel).
+function sendPayload(payload) {
+  const controller = new AbortController();
+  const timer = setTimeout(function () { controller.abort(); }, SEND_TIMEOUT_MS);
+
+  return fetch(ENDPOINT_URL, {
     method: "POST",
     mode: "no-cors",                                         // <-- do not try to read the reply
     headers: { "Content-Type": "text/plain;charset=utf-8" }, // <-- avoids preflight
-    body: JSON.stringify(payload)
-  })
-    .then(function () {
-      // Give the server a moment to finish writing, then VERIFY (step 2).
-      setTimeout(function () {
-        verifySave(STUDENT_NUMBER, GROUP, trials.length);
-      }, 800);
-    })
-    .catch(function (err) {
-      showSaveError(err);        // could not even send (e.g. offline) -> retry
-    });
+    body: JSON.stringify(payload),
+    signal: controller.signal
+  }).then(
+    function () { clearTimeout(timer); },
+    function (err) {
+      clearTimeout(timer);
+      if (controller.signal.aborted) {
+        throw new Error("Sending your data took too long (no answer within " +
+                        SEND_TIMEOUT_MS / 1000 + " seconds).");
+      }
+      throw err;                 // could not even send (e.g. offline)
+    }
+  );
 }
 
-// STEP 2 — ask the server (via JSONP) whether our rows are really in the Sheet.
-// We succeed only if the Sheet reports at least as many rows for this student
-// as we just sent. Anything else shows an honest error with a retry button.
-function verifySave(studentNumber, group, expectedRows) {
-  const callbackName = "stroopVerify_" + Date.now();
-  const script = document.createElement("script");
+// STEP 2 — ask the server (via JSONP) how many rows this student has in the
+// Sheet. Resolves with that number; rejects if the server cannot be reached
+// or does not answer within VERIFY_TIMEOUT_MS.
+function countSavedRows() {
+  return new Promise(function (resolve, reject) {
+    const callbackName = "stroopVerify_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+    const script = document.createElement("script");
 
-  // If the server does not answer within 15 s, treat it as a failure.
-  const timer = setTimeout(function () {
-    cleanup();
-    showSaveError("The server did not confirm your data in time.");
-  }, 15000);
+    const timer = setTimeout(function () {
+      cleanup();
+      reject(new Error("The server did not confirm your data in time."));
+    }, VERIFY_TIMEOUT_MS);
 
-  function cleanup() {
-    clearTimeout(timer);
-    try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
-    if (script.parentNode) { script.parentNode.removeChild(script); }
-  }
-
-  // The Apps Script calls this function with its answer.
-  window[callbackName] = function (response) {
-    cleanup();
-    if (response && response.status === "ok" && response.rows >= expectedRows) {
-      jsPsych.finishTrial();     // confirmed in the Sheet -> show the debrief
-    } else {
-      const reported = (response && typeof response.rows !== "undefined") ? response.rows : "no";
-      showSaveError("The server could not confirm your data were stored (it found " +
-                    reported + " saved rows). Please try again.");
+    // Detach this request completely. The browser may still finish loading a
+    // script we have given up on, so its callback becomes a harmless no-op
+    // (rather than being deleted) and its error handler is removed — a late
+    // answer can then never interfere with a later attempt.
+    function cleanup() {
+      clearTimeout(timer);
+      window[callbackName] = function () {};
+      script.onerror = null;
+      if (script.parentNode) { script.parentNode.removeChild(script); }
     }
-  };
 
-  // Build the JSONP request URL and load it as a <script>.
-  script.src =
-    ENDPOINT_URL +
-    "?action=verify" +
-    "&callback=" + encodeURIComponent(callbackName) +
-    "&student_number=" + encodeURIComponent(studentNumber) +
-    "&group=" + encodeURIComponent(group) +
-    "&_=" + Date.now();          // cache-buster so we never read a stale answer
-  script.onerror = function () {
-    cleanup();
-    showSaveError("Could not reach the server to confirm your data.");
-  };
-  document.body.appendChild(script);
+    // The Apps Script calls this function with its answer.
+    window[callbackName] = function (response) {
+      cleanup();
+      const rows = response ? Number(response.rows) : NaN;
+      if (response && response.status === "ok" && !isNaN(rows)) {
+        resolve(rows);
+      } else {
+        reject(new Error("The server could not confirm your data were stored " +
+                         "(it found no saved rows). Please try again."));
+      }
+    };
+    script.onerror = function () {
+      cleanup();
+      reject(new Error("Could not reach the server to confirm your data."));
+    };
+
+    // Build the JSONP request URL and load it as a <script>.
+    script.src =
+      ENDPOINT_URL +
+      "?action=verify" +
+      "&callback=" + encodeURIComponent(callbackName) +
+      "&student_number=" + encodeURIComponent(STUDENT_NUMBER) +
+      "&group=" + encodeURIComponent(GROUP) +
+      "&_=" + Date.now();          // cache-buster so we never read a stale answer
+    document.body.appendChild(script);
+  });
+}
+
+function wait(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
 }
 
 // Shows a clear failure message with a "Try again" button.
@@ -727,13 +812,24 @@ function showSaveError(err) {
     '<div class="msg">' +
       '<h1 style="color:#b00020;">⚠️ Saving did not work</h1>' +
       "<p>Your responses are still safe in this browser tab. Please check your " +
-      "internet connection and try again.</p>" +
-      '<p style="color:#666;font-size:14px;">Technical detail: ' + String(err) + "</p>" +
+      "internet connection and try again. When your connection comes back, " +
+      "this page will also try again by itself.</p>" +
+      '<p style="color:#666;font-size:14px;">Technical detail: ' +
+        String((err && err.message) || err) + "</p>" +
       '<p>If it keeps failing, please tell your instructor and keep this tab open.</p>' +
       '<button id="retry-btn" class="jspsych-btn">Try again</button>' +
     "</div>";
   document.getElementById("retry-btn").addEventListener("click", attemptSave);
 }
+
+// When the browser reports the connection is back, retry by itself — but
+// only while the error screen is showing. The short pause gives the new
+// connection a moment to settle before we use it.
+window.addEventListener("online", function () {
+  setTimeout(function () {
+    if (document.getElementById("retry-btn")) { attemptSave(); }
+  }, 2000);
+});
 
 
 /* =======================================================================
